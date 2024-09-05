@@ -1,0 +1,387 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "source": [],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      },
+      "id": "0d30d776-8190-4682-ad8c-2cc37ffdf7f6"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import azureml.core\n",
+        "from azureml.core import Workspace, Environment, Experiment, Dataset\n",
+        "from azureml.pipeline.core import Pipeline, PipelineData\n",
+        "from azureml.pipeline.steps import PythonScriptStep\n",
+        "from azureml.core.runconfig import RunConfiguration\n",
+        "from azureml.core.compute import ComputeTarget\n",
+        "from azureml.core.authentication import InteractiveLoginAuthentication\n",
+        "from azureml.core import Model, Run"
+      ],
+      "outputs": [],
+      "execution_count": 27,
+      "metadata": {},
+      "id": "27ae6ccd"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "ws = Workspace.from_config()\n",
+        "#auth = InteractiveLoginAuthentication()\n",
+        "#ws = Workspace(subscription_id = \"73bd14a5-edfe-4e77-a22d-8de4e1ca1301\",\n",
+        " #   resource_group = \"AzureMachineLearning\",\n",
+        "  #  workspace_name = \"MachineLearningWorkspace\",\n",
+        "   #           auth = auth)\n",
+        "datastore = ws.get_default_datastore()\n",
+        "datastore.upload(src_dir='data/raw/', target_path='Data')\n",
+        "dataset = Dataset.Tabular.from_delimited_files(path=[(datastore, 'Data/heart.csv')])\n",
+        "dataset = dataset.register(workspace=ws, name='heart_disease_data', create_new_version=True)"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": "\"Datastore.upload\" is deprecated after version 1.0.69. Please use \"Dataset.File.upload_directory\" to upload your files             from a local directory and create FileDataset in single method call. See Dataset API change notice at https://aka.ms/dataset-deprecation.\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Uploading an estimated of 1 files\nTarget already exists. Skipping upload for Data/heart.csv\nUploaded 0 files\n"
+        }
+      ],
+      "execution_count": 2,
+      "metadata": {},
+      "id": "b21a19af"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "\n",
+        "env = Environment.from_conda_specification(name='heart_disease_env', file_path='env.yml')\n",
+        "compute_target = ComputeTarget(ws, 'AzureInstance')\n",
+        "run_config = RunConfiguration()\n",
+        "run_config.environment = env\n",
+        "\n",
+        "# Define pipeline steps\n",
+        "processed_data = PipelineData('processed_data', datastore=ws.get_default_datastore())\n",
+        "engineered_data = PipelineData('engineered_data', datastore=ws.get_default_datastore())\n",
+        "normalized_data = PipelineData('normalized_data', datastore=ws.get_default_datastore())\n",
+        "trained_model = PipelineData('trained_model', datastore=ws.get_default_datastore())\n",
+        "test_data = PipelineData('test_data', datastore=ws.get_default_datastore())\n",
+        "evaluation_report = PipelineData('evaluation_report', datastore=ws.get_default_datastore())"
+      ],
+      "outputs": [],
+      "execution_count": 3,
+      "metadata": {},
+      "id": "fd32049c"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "raw_ds = Dataset.get_by_name(ws, 'heart_disease_data')\n",
+        "# Preprocessing step\n",
+        "preprocess_step = PythonScriptStep(\n",
+        "    name='Preprocess Data',\n",
+        "    script_name = 'data_preprocessing.py',\n",
+        "    arguments=['--data_path', raw_ds.as_named_input('raw_data'), '--output_path', processed_data],\n",
+        "    outputs=[processed_data],\n",
+        "    compute_target = compute_target,\n",
+        "    runconfig=run_config,\n",
+        "    source_directory='scripts',\n",
+        "    allow_reuse = False\n",
+        "    \n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 18,
+      "metadata": {},
+      "id": "589e273b"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Feature engineerin step\n",
+        "feature_engineering_step = PythonScriptStep(\n",
+        "    name='Feature Engineering',\n",
+        "    script_name='feature_engineering.py',\n",
+        "    arguments=['--data_path', processed_data, '--output_path', engineered_data],\n",
+        "    inputs=[processed_data],\n",
+        "    outputs=[engineered_data],\n",
+        "    compute_target=compute_target,\n",
+        "    runconfig=run_config,\n",
+        "    source_directory='scripts',\n",
+        "    allow_reuse = False\n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 19,
+      "metadata": {},
+      "id": "ee66cd6a"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Normalization Step\n",
+        "normalization_step = PythonScriptStep(\n",
+        "    name='Normalization',\n",
+        "    script_name='normalization.py',\n",
+        "    arguments=['--data_path', engineered_data, '--output_path', normalized_data],\n",
+        "    inputs=[engineered_data],\n",
+        "    outputs=[normalized_data],\n",
+        "    compute_target=compute_target,\n",
+        "    runconfig=run_config,\n",
+        "    source_directory='scripts',\n",
+        "    allow_reuse = False\n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 20,
+      "metadata": {},
+      "id": "2d22eebd"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Training_step\n",
+        "train_step = PythonScriptStep(\n",
+        "    name='Training Data',\n",
+        "    script_name='train.py',\n",
+        "    arguments=['--data_path', normalized_data, '--model_output_path', trained_model, '--test_data_path', test_data],\n",
+        "    inputs=[normalized_data],\n",
+        "    outputs=[trained_model, test_data],\n",
+        "    compute_target=compute_target,\n",
+        "    runconfig=run_config,\n",
+        "    source_directory='scripts',\n",
+        "    allow_reuse = False\n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 21,
+      "metadata": {},
+      "id": "abbc4f62"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Evaluation Step\n",
+        "evaluate_step = PythonScriptStep(\n",
+        "    name='Evaluate Model',\n",
+        "    script_name = 'evaluate_model.py',\n",
+        "    arguments=['--test_data_path', test_data, '--model_path', trained_model, '--output_path', evaluation_report],\n",
+        "    inputs=[test_data, trained_model],\n",
+        "    outputs=[evaluation_report],\n",
+        "    compute_target=compute_target,\n",
+        "    runconfig=run_config,\n",
+        "    source_directory='scripts',\n",
+        "    allow_reuse = False\n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 22,
+      "metadata": {},
+      "id": "f0991e28"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Create Pipeline\n",
+        "pipeline = Pipeline(ws, steps=[preprocess_step, feature_engineering_step, normalization_step, train_step, evaluate_step])\n",
+        "experiment = Experiment(workspace=ws, name='heart_disease_pipeline_experiment')\n",
+        "pipeline_run = experiment.submit(pipeline)\n",
+        "pipeline_run.wait_for_completion(show_output=True)"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Created step Preprocess Data [557dbd78][c166d00c-450f-42dc-a063-4c527701a799], (This step will run and generate new outputs)\nCreated step Feature Engineering [2e39d485][b063e9da-6d9f-421f-a5ee-dc5c85149cdc], (This step will run and generate new outputs)\nCreated step Normalization [912f7cd8][db4c13c5-c3cb-4442-b621-5c2579f3289c], (This step will run and generate new outputs)\nCreated step Training Data [6732b843][0a585a16-d24b-49fa-9f24-fb2562b4aee8], (This step will run and generate new outputs)\nCreated step Evaluate Model [601af22e][104c18cf-35bb-4a8b-bb89-0b6f08cfe245], (This step will run and generate new outputs)\nSubmitted PipelineRun e4698e01-dc62-405b-bfee-4f759c7af7c5\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/e4698e01-dc62-405b-bfee-4f759c7af7c5?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nPipelineRunId: e4698e01-dc62-405b-bfee-4f759c7af7c5\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/e4698e01-dc62-405b-bfee-4f759c7af7c5?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nPipelineRun Status: NotStarted\nPipelineRun Status: Running\n\n\nStepRunId: 19a123c0-2ba6-44bc-8498-5378158d84da\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/19a123c0-2ba6-44bc-8498-5378158d84da?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nStepRun( Preprocess Data ) Status: Queued\n\nStepRun(Preprocess Data) Execution Summary\n===========================================\nStepRun( Preprocess Data ) Status: Finished\n{'runId': '19a123c0-2ba6-44bc-8498-5378158d84da', 'target': 'AzureInstance', 'status': 'Completed', 'startTimeUtc': '2024-09-05T01:08:53.673015Z', 'endTimeUtc': '2024-09-05T01:09:11.344337Z', 'services': {}, 'properties': {'ContentSnapshotId': 'ea9575cc-de17-47c6-9b48-09e05027ddee', 'StepType': 'PythonScriptStep', 'azureml.moduleid': 'c166d00c-450f-42dc-a063-4c527701a799', 'azureml.moduleFamilyId': '169b5908-d719-4e42-a5e7-d18091f28026', 'azureml.moduleName': 'Preprocess Data', 'azureml.runsource': 'azureml.StepRun', 'azureml.nodeid': '557dbd78', 'azureml.pipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipeline': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.rootpipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipelineComponent': 'masterescloud', '_azureml.ComputeTargetType': 'amlcdsi', '_azureml.ClusterName': 'AzureInstance', 'ProcessInfoFile': 'azureml-logs/process_info.json', 'ProcessStatusFile': 'azureml-logs/process_status.json'}, 'inputDatasets': [{'dataset': {'id': '4f91eaa9-6189-48e6-9c72-697bd6d248b4'}, 'consumptionDetails': {'type': 'RunInput', 'inputName': 'raw_data', 'mechanism': 'Direct'}}], 'outputDatasets': [], 'runDefinition': {'script': 'data_preprocessing.py', 'command': '', 'useAbsolutePath': False, 'arguments': ['--data_path', 'DatasetConsumptionConfig:raw_data', '--output_path', '$AZUREML_DATAREFERENCE_processed_data'], 'sourceDirectoryDataStore': None, 'framework': 'Python', 'communicator': 'None', 'target': 'AzureInstance', 'dataReferences': {'processed_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/19a123c0-2ba6-44bc-8498-5378158d84da/processed_data', 'pathOnCompute': None, 'overwrite': False}}, 'data': {'raw_data': {'dataLocation': {'dataset': {'id': '4f91eaa9-6189-48e6-9c72-697bd6d248b4', 'name': None, 'version': '8'}, 'dataPath': None, 'uri': None, 'type': None}, 'mechanism': 'Direct', 'environmentVariableName': 'raw_data', 'pathOnCompute': None, 'overwrite': False, 'options': None}}, 'outputData': {}, 'datacaches': [], 'jobName': None, 'maxRunDurationSeconds': None, 'nodeCount': 1, 'instanceTypes': [], 'priority': None, 'credentialPassthrough': False, 'identity': None, 'environment': {'name': 'heart_disease_env', 'version': 'Autosave_2024-09-04T12:47:00Z_1085e385', 'assetId': 'azureml://locations/eastus2/workspaces/48f871bf-0779-4901-963a-ebce55190d65/environments/heart_disease_env/versions/Autosave_2024-09-04T12:47:00Z_1085e385', 'autoRebuild': True, 'python': {'interpreterPath': 'python', 'userManagedDependencies': False, 'condaDependencies': {'name': 'heart_disease_env', 'dependencies': ['python=3.8.5', 'scikit-learn', 'pandas', 'joblib', 'pip', 'anaconda', {'pip': ['azureml-core', 'azureml-defaults', 'azureml-sdk']}]}, 'baseCondaEnvironment': None}, 'environmentVariables': {'EXAMPLE_ENV_VAR': 'EXAMPLE_VALUE'}, 'docker': {'baseImage': 'mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240709.v1', 'platform': {'os': 'Linux', 'architecture': 'amd64'}, 'baseDockerfile': None, 'baseImageRegistry': {'address': None, 'username': None, 'password': None}, 'enabled': False, 'arguments': []}, 'spark': {'repositories': [], 'packages': [], 'precachePackages': True}, 'inferencingStackVersion': None}, 'history': {'outputCollection': True, 'directoriesToWatch': ['logs'], 'enableMLflowTracking': True, 'snapshotProject': True}, 'spark': {'configuration': {'spark.app.name': 'Azure ML Experiment', 'spark.yarn.maxAppAttempts': '1'}}, 'parallelTask': {'maxRetriesPerWorker': 0, 'workerCountPerNode': 1, 'terminalExitCodes': None, 'configuration': {}}, 'amlCompute': {'name': None, 'vmSize': None, 'retainCluster': False, 'clusterMaxNodeCount': 1}, 'aiSuperComputer': {'instanceType': 'D2', 'imageVersion': 'pytorch-1.7.0', 'location': None, 'aiSuperComputerStorageData': None, 'interactive': False, 'scalePolicy': None, 'virtualClusterArmId': None, 'tensorboardLogDirectory': None, 'sshPublicKey': None, 'sshPublicKeys': None, 'enableAzmlInt': True, 'priority': 'Medium', 'slaTier': 'Standard', 'userAlias': None}, 'kubernetesCompute': {'instanceType': None}, 'tensorflow': {'workerCount': 1, 'parameterServerCount': 1}, 'mpi': {'processCountPerNode': 1}, 'pyTorch': {'communicationBackend': 'nccl', 'processCount': None}, 'hdi': {'yarnDeployMode': 'Cluster'}, 'containerInstance': {'region': None, 'cpuCores': 2.0, 'memoryGb': 3.5}, 'exposedPorts': None, 'docker': {'useDocker': False, 'sharedVolumes': True, 'shmSize': '2g', 'arguments': []}, 'cmk8sCompute': {'configuration': {}}, 'commandReturnCodeConfig': {'returnCode': 'Zero', 'successfulReturnCodes': []}, 'environmentVariables': {}, 'applicationEndpoints': {}, 'parameters': []}, 'logFiles': {'logs/azureml/dataprep/0/rslex.log.2024-09-05-01': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/logs/azureml/dataprep/0/rslex.log.2024-09-05-01?sv=2019-07-07&sr=b&sig=IAi5bHj%2F0hDfMT01DE%2FYAep0aa6Nw04OjTlV5WTlM1A%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A10Z&se=2024-09-05T09%3A09%3A10Z&sp=r', 'logs/azureml/executionlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/logs/azureml/executionlogs.txt?sv=2019-07-07&sr=b&sig=eSuQJeNi2gJvkXkssP9PEvSen79iSRHWLdDGAKjvDsY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A10Z&se=2024-09-05T09%3A09%3A10Z&sp=r', 'logs/azureml/stderrlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/logs/azureml/stderrlogs.txt?sv=2019-07-07&sr=b&sig=sEOw%2FxutmHuQvrfmJ2RJ8d1r07v2u03IYpnjRMgYXI4%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A10Z&se=2024-09-05T09%3A09%3A10Z&sp=r', 'logs/azureml/stdoutlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/logs/azureml/stdoutlogs.txt?sv=2019-07-07&sr=b&sig=a5vOpSpmqqyKGshhCBzRMX0neZjVozXBYHtPRlVHxa0%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A10Z&se=2024-09-05T09%3A09%3A10Z&sp=r', 'user_logs/std_log.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/user_logs/std_log.txt?sv=2019-07-07&sr=b&sig=yzZJ82QjzMT8074ajc%2FoB1fJEhUO8CVy71G3dsoIprQ%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/cs_capability/cs-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/cs_capability/cs-capability.log?sv=2019-07-07&sr=b&sig=c5I9qXXV%2FjmAzlujzQN8j%2Fo2wnj48UTT4DxRyeEhijs%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/data_capability/data-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/data_capability/data-capability.log?sv=2019-07-07&sr=b&sig=h5K4WgO7XLCLGTQPeb1OxC9ZrFrIXUs4Q%2F3Z0HjOY%2Fc%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/data_capability/rslex.log.2024-09-05-01': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/data_capability/rslex.log.2024-09-05-01?sv=2019-07-07&sr=b&sig=RRZ2SWQVYgcaQspFucXXPL8yNHTptlui7j5MqXslLAs%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/hosttools_capability/hosttools-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/hosttools_capability/hosttools-capability.log?sv=2019-07-07&sr=b&sig=Ff8WMZuf%2BsPbc%2FhwLmidsmx0%2BZFQ%2FZxj5JzMv8zyfKw%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/lifecycler/execution-wrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/lifecycler/execution-wrapper.log?sv=2019-07-07&sr=b&sig=hmSLHAMTpozuYekCt8SOsJ7AL1RgrM1PixHf4GC0Wg8%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/lifecycler/lifecycler.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/lifecycler/lifecycler.log?sv=2019-07-07&sr=b&sig=AW5cI2I3DJOIGKaQydP9rJXfAWt3cthsniYIVTVm728%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/lifecycler/vm-bootstrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/lifecycler/vm-bootstrapper.log?sv=2019-07-07&sr=b&sig=KUetVs7i5oAsj0zE8MRMgBdkGjYggGc4xQjf20Vtd2M%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/metrics_capability/metrics-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/metrics_capability/metrics-capability.log?sv=2019-07-07&sr=b&sig=ti8SqVg%2FCEz4O0gLoT1xJbsuooaMobCd61qiPIyw3Gc%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r', 'system_logs/snapshot_capability/snapshot-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.19a123c0-2ba6-44bc-8498-5378158d84da/system_logs/snapshot_capability/snapshot-capability.log?sv=2019-07-07&sr=b&sig=FcHyp1%2BKR%2BASV%2BLzVOv%2BDblSSUFbyWxH48Z1LmvcaGI%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A12Z&se=2024-09-05T09%3A09%3A12Z&sp=r'}, 'submittedBy': 'charu latha'}\n\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\n\n\nStepRunId: f891dc68-6a61-42c5-a67c-48d881537824\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/f891dc68-6a61-42c5-a67c-48d881537824?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nStepRun( Feature Engineering ) Status: Running\n\nStepRun(Feature Engineering) Execution Summary\n===============================================\nStepRun( Feature Engineering ) Status: Finished\n{'runId': 'f891dc68-6a61-42c5-a67c-48d881537824', 'target': 'AzureInstance', 'status': 'Completed', 'startTimeUtc': '2024-09-05T01:09:19.444343Z', 'endTimeUtc': '2024-09-05T01:09:32.609391Z', 'services': {}, 'properties': {'ContentSnapshotId': 'ea9575cc-de17-47c6-9b48-09e05027ddee', 'StepType': 'PythonScriptStep', 'azureml.moduleid': 'b063e9da-6d9f-421f-a5ee-dc5c85149cdc', 'azureml.moduleFamilyId': 'f59ace6e-b55e-466f-8acd-e138abec0849', 'azureml.moduleName': 'Feature Engineering', 'azureml.runsource': 'azureml.StepRun', 'azureml.nodeid': '2e39d485', 'azureml.pipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipeline': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.rootpipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipelineComponent': 'masterescloud', '_azureml.ComputeTargetType': 'amlcdsi', '_azureml.ClusterName': 'AzureInstance', 'ProcessInfoFile': 'azureml-logs/process_info.json', 'ProcessStatusFile': 'azureml-logs/process_status.json'}, 'inputDatasets': [], 'outputDatasets': [], 'runDefinition': {'script': 'feature_engineering.py', 'command': '', 'useAbsolutePath': False, 'arguments': ['--data_path', '$AZUREML_DATAREFERENCE_processed_data', '--output_path', '$AZUREML_DATAREFERENCE_engineered_data'], 'sourceDirectoryDataStore': None, 'framework': 'Python', 'communicator': 'None', 'target': 'AzureInstance', 'dataReferences': {'processed_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/19a123c0-2ba6-44bc-8498-5378158d84da/processed_data', 'pathOnCompute': None, 'overwrite': False}, 'engineered_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f891dc68-6a61-42c5-a67c-48d881537824/engineered_data', 'pathOnCompute': None, 'overwrite': False}}, 'data': {}, 'outputData': {}, 'datacaches': [], 'jobName': None, 'maxRunDurationSeconds': None, 'nodeCount': 1, 'instanceTypes': [], 'priority': None, 'credentialPassthrough': False, 'identity': None, 'environment': {'name': 'heart_disease_env', 'version': 'Autosave_2024-09-04T12:47:00Z_1085e385', 'assetId': 'azureml://locations/eastus2/workspaces/48f871bf-0779-4901-963a-ebce55190d65/environments/heart_disease_env/versions/Autosave_2024-09-04T12:47:00Z_1085e385', 'autoRebuild': True, 'python': {'interpreterPath': 'python', 'userManagedDependencies': False, 'condaDependencies': {'name': 'heart_disease_env', 'dependencies': ['python=3.8.5', 'scikit-learn', 'pandas', 'joblib', 'pip', 'anaconda', {'pip': ['azureml-core', 'azureml-defaults', 'azureml-sdk']}]}, 'baseCondaEnvironment': None}, 'environmentVariables': {'EXAMPLE_ENV_VAR': 'EXAMPLE_VALUE'}, 'docker': {'baseImage': 'mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240709.v1', 'platform': {'os': 'Linux', 'architecture': 'amd64'}, 'baseDockerfile': None, 'baseImageRegistry': {'address': None, 'username': None, 'password': None}, 'enabled': False, 'arguments': []}, 'spark': {'repositories': [], 'packages': [], 'precachePackages': True}, 'inferencingStackVersion': None}, 'history': {'outputCollection': True, 'directoriesToWatch': ['logs'], 'enableMLflowTracking': True, 'snapshotProject': True}, 'spark': {'configuration': {'spark.app.name': 'Azure ML Experiment', 'spark.yarn.maxAppAttempts': '1'}}, 'parallelTask': {'maxRetriesPerWorker': 0, 'workerCountPerNode': 1, 'terminalExitCodes': None, 'configuration': {}}, 'amlCompute': {'name': None, 'vmSize': None, 'retainCluster': False, 'clusterMaxNodeCount': 1}, 'aiSuperComputer': {'instanceType': 'D2', 'imageVersion': 'pytorch-1.7.0', 'location': None, 'aiSuperComputerStorageData': None, 'interactive': False, 'scalePolicy': None, 'virtualClusterArmId': None, 'tensorboardLogDirectory': None, 'sshPublicKey': None, 'sshPublicKeys': None, 'enableAzmlInt': True, 'priority': 'Medium', 'slaTier': 'Standard', 'userAlias': None}, 'kubernetesCompute': {'instanceType': None}, 'tensorflow': {'workerCount': 1, 'parameterServerCount': 1}, 'mpi': {'processCountPerNode': 1}, 'pyTorch': {'communicationBackend': 'nccl', 'processCount': None}, 'hdi': {'yarnDeployMode': 'Cluster'}, 'containerInstance': {'region': None, 'cpuCores': 2.0, 'memoryGb': 3.5}, 'exposedPorts': None, 'docker': {'useDocker': False, 'sharedVolumes': True, 'shmSize': '2g', 'arguments': []}, 'cmk8sCompute': {'configuration': {}}, 'commandReturnCodeConfig': {'returnCode': 'Zero', 'successfulReturnCodes': []}, 'environmentVariables': {}, 'applicationEndpoints': {}, 'parameters': []}, 'logFiles': {'logs/azureml/executionlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/logs/azureml/executionlogs.txt?sv=2019-07-07&sr=b&sig=dtxv8wFkxWyyhlL7A7KyiNMeEGA%2FYfiS3pvtvIKnWwk%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A37Z&ske=2024-09-06T01%3A04%3A37Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A18Z&se=2024-09-05T09%3A09%3A18Z&sp=r', 'logs/azureml/stderrlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/logs/azureml/stderrlogs.txt?sv=2019-07-07&sr=b&sig=9zR3xRqYVuI1g4IZ236UkxVfVSyVFiCtMuOHt%2Fgur3M%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A37Z&ske=2024-09-06T01%3A04%3A37Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A18Z&se=2024-09-05T09%3A09%3A18Z&sp=r', 'logs/azureml/stdoutlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/logs/azureml/stdoutlogs.txt?sv=2019-07-07&sr=b&sig=bwkTYd2BA%2F4Q183DB1bbTg5hwjv4x%2BkuhdPYxBSq9DI%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A37Z&ske=2024-09-06T01%3A04%3A37Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A18Z&se=2024-09-05T09%3A09%3A18Z&sp=r', 'user_logs/std_log.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/user_logs/std_log.txt?sv=2019-07-07&sr=b&sig=tnqlwOn0KK9ykiVJ91j58y4nK9JC3bA%2BVwRrLRAb8Qc%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A59%3A10Z&ske=2024-09-06T01%3A09%3A10Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/cs_capability/cs-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/cs_capability/cs-capability.log?sv=2019-07-07&sr=b&sig=sky4ajqm%2BXY9AuVh9oc06g0QW%2FK%2FTWll4Kk4Aqq2514%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/data_capability/data-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/data_capability/data-capability.log?sv=2019-07-07&sr=b&sig=zMB2pYU1cZRn0Aro9WC32oX1sgWaNPxDWY3y4EG5PcQ%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/data_capability/rslex.log.2024-09-05-01': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/data_capability/rslex.log.2024-09-05-01?sv=2019-07-07&sr=b&sig=N2cLxIO6luuKwiYB6k8T3h1%2BZJQMolFzw1S0%2B2RAAlY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/hosttools_capability/hosttools-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/hosttools_capability/hosttools-capability.log?sv=2019-07-07&sr=b&sig=ofOAA%2FVGHGMOJDQx2HrTt8GxF5BSOMIfMOfvRBnKOYY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/lifecycler/execution-wrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/lifecycler/execution-wrapper.log?sv=2019-07-07&sr=b&sig=9p%2FJMfI%2B0oObGFtvCkufJ0dq5Kb4HAK5AR4GtyEIq7Q%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/lifecycler/lifecycler.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/lifecycler/lifecycler.log?sv=2019-07-07&sr=b&sig=b3SoFRGu0pJa0lT2HtNphRvJ3V30qWU1UzXhukzVKyQ%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/lifecycler/vm-bootstrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/lifecycler/vm-bootstrapper.log?sv=2019-07-07&sr=b&sig=mptrrUGNv%2FpN4cmmb9g%2FzIpHEc2hX5%2BlOawJNaEl508%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/metrics_capability/metrics-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/metrics_capability/metrics-capability.log?sv=2019-07-07&sr=b&sig=V8qAo91w4%2FuiGSxDQ6vJpJ3pWs3udXfyeMLLWk4rHmE%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r', 'system_logs/snapshot_capability/snapshot-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f891dc68-6a61-42c5-a67c-48d881537824/system_logs/snapshot_capability/snapshot-capability.log?sv=2019-07-07&sr=b&sig=O0HUng7Gf1rX0P3E%2B7lUpFA5iVSf4RiX6x9h%2BqfisNQ%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A34Z&se=2024-09-05T09%3A09%3A34Z&sp=r'}, 'submittedBy': 'charu latha'}\n\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\n\n\nStepRunId: f74d254d-3d8e-4b77-93b7-8c3e1f3602f9\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/f74d254d-3d8e-4b77-93b7-8c3e1f3602f9?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nStepRun( Normalization ) Status: NotStarted\nStepRun( Normalization ) Status: Running\n\nStepRun(Normalization) Execution Summary\n=========================================\nStepRun( Normalization ) Status: Finished\n{'runId': 'f74d254d-3d8e-4b77-93b7-8c3e1f3602f9', 'target': 'AzureInstance', 'status': 'Completed', 'startTimeUtc': '2024-09-05T01:09:41.829405Z', 'endTimeUtc': '2024-09-05T01:09:55.845954Z', 'services': {}, 'properties': {'ContentSnapshotId': 'ea9575cc-de17-47c6-9b48-09e05027ddee', 'StepType': 'PythonScriptStep', 'azureml.moduleid': 'db4c13c5-c3cb-4442-b621-5c2579f3289c', 'azureml.moduleFamilyId': 'ed49eebe-dde5-48a2-846e-d24e72f83fc4', 'azureml.moduleName': 'Normalization', 'azureml.runsource': 'azureml.StepRun', 'azureml.nodeid': '912f7cd8', 'azureml.pipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipeline': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.rootpipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipelineComponent': 'masterescloud', '_azureml.ComputeTargetType': 'amlcdsi', '_azureml.ClusterName': 'AzureInstance', 'ProcessInfoFile': 'azureml-logs/process_info.json', 'ProcessStatusFile': 'azureml-logs/process_status.json'}, 'inputDatasets': [], 'outputDatasets': [], 'runDefinition': {'script': 'normalization.py', 'command': '', 'useAbsolutePath': False, 'arguments': ['--data_path', '$AZUREML_DATAREFERENCE_engineered_data', '--output_path', '$AZUREML_DATAREFERENCE_normalized_data'], 'sourceDirectoryDataStore': None, 'framework': 'Python', 'communicator': 'None', 'target': 'AzureInstance', 'dataReferences': {'engineered_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f891dc68-6a61-42c5-a67c-48d881537824/engineered_data', 'pathOnCompute': None, 'overwrite': False}, 'normalized_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/normalized_data', 'pathOnCompute': None, 'overwrite': False}}, 'data': {}, 'outputData': {}, 'datacaches': [], 'jobName': None, 'maxRunDurationSeconds': None, 'nodeCount': 1, 'instanceTypes': [], 'priority': None, 'credentialPassthrough': False, 'identity': None, 'environment': {'name': 'heart_disease_env', 'version': 'Autosave_2024-09-04T12:47:00Z_1085e385', 'assetId': 'azureml://locations/eastus2/workspaces/48f871bf-0779-4901-963a-ebce55190d65/environments/heart_disease_env/versions/Autosave_2024-09-04T12:47:00Z_1085e385', 'autoRebuild': True, 'python': {'interpreterPath': 'python', 'userManagedDependencies': False, 'condaDependencies': {'name': 'heart_disease_env', 'dependencies': ['python=3.8.5', 'scikit-learn', 'pandas', 'joblib', 'pip', 'anaconda', {'pip': ['azureml-core', 'azureml-defaults', 'azureml-sdk']}]}, 'baseCondaEnvironment': None}, 'environmentVariables': {'EXAMPLE_ENV_VAR': 'EXAMPLE_VALUE'}, 'docker': {'baseImage': 'mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240709.v1', 'platform': {'os': 'Linux', 'architecture': 'amd64'}, 'baseDockerfile': None, 'baseImageRegistry': {'address': None, 'username': None, 'password': None}, 'enabled': False, 'arguments': []}, 'spark': {'repositories': [], 'packages': [], 'precachePackages': True}, 'inferencingStackVersion': None}, 'history': {'outputCollection': True, 'directoriesToWatch': ['logs'], 'enableMLflowTracking': True, 'snapshotProject': True}, 'spark': {'configuration': {'spark.app.name': 'Azure ML Experiment', 'spark.yarn.maxAppAttempts': '1'}}, 'parallelTask': {'maxRetriesPerWorker': 0, 'workerCountPerNode': 1, 'terminalExitCodes': None, 'configuration': {}}, 'amlCompute': {'name': None, 'vmSize': None, 'retainCluster': False, 'clusterMaxNodeCount': 1}, 'aiSuperComputer': {'instanceType': 'D2', 'imageVersion': 'pytorch-1.7.0', 'location': None, 'aiSuperComputerStorageData': None, 'interactive': False, 'scalePolicy': None, 'virtualClusterArmId': None, 'tensorboardLogDirectory': None, 'sshPublicKey': None, 'sshPublicKeys': None, 'enableAzmlInt': True, 'priority': 'Medium', 'slaTier': 'Standard', 'userAlias': None}, 'kubernetesCompute': {'instanceType': None}, 'tensorflow': {'workerCount': 1, 'parameterServerCount': 1}, 'mpi': {'processCountPerNode': 1}, 'pyTorch': {'communicationBackend': 'nccl', 'processCount': None}, 'hdi': {'yarnDeployMode': 'Cluster'}, 'containerInstance': {'region': None, 'cpuCores': 2.0, 'memoryGb': 3.5}, 'exposedPorts': None, 'docker': {'useDocker': False, 'sharedVolumes': True, 'shmSize': '2g', 'arguments': []}, 'cmk8sCompute': {'configuration': {}}, 'commandReturnCodeConfig': {'returnCode': 'Zero', 'successfulReturnCodes': []}, 'environmentVariables': {}, 'applicationEndpoints': {}, 'parameters': []}, 'logFiles': {'logs/azureml/executionlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/logs/azureml/executionlogs.txt?sv=2019-07-07&sr=b&sig=lAdaEY4HZgCJam9Bs9D1Y8nRnxmthSy4QHSWd%2F5ysAY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A39Z&se=2024-09-05T09%3A09%3A39Z&sp=r', 'logs/azureml/stderrlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/logs/azureml/stderrlogs.txt?sv=2019-07-07&sr=b&sig=LQl1FBIuJMw4bcbQtdgz9pfUyTU8Yy7mFuElah3UzZA%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A39Z&se=2024-09-05T09%3A09%3A39Z&sp=r', 'logs/azureml/stdoutlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/logs/azureml/stdoutlogs.txt?sv=2019-07-07&sr=b&sig=dxS47UIdervfgksOvcAyrYMuY82AGK9M72ocZ0yL%2BOM%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A58Z&ske=2024-09-06T01%3A05%3A58Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A39Z&se=2024-09-05T09%3A09%3A39Z&sp=r', 'user_logs/std_log.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/user_logs/std_log.txt?sv=2019-07-07&sr=b&sig=5FuxPqHom3HWLi6hGk0zJMEi5WuUmubuuto8SO9Wpu0%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A59%3A48Z&ske=2024-09-06T01%3A09%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/cs_capability/cs-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/cs_capability/cs-capability.log?sv=2019-07-07&sr=b&sig=sJhkPJOR4FBTHX4RildZ0efTA6U6k4XERz706syU65E%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/data_capability/data-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/data_capability/data-capability.log?sv=2019-07-07&sr=b&sig=AzKWkIz6hMgs%2FqH%2FvNEOpV2bIMrYTgDyXwt6GvM5e0E%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/data_capability/rslex.log.2024-09-05-01': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/data_capability/rslex.log.2024-09-05-01?sv=2019-07-07&sr=b&sig=HtfRzGJwuCE1PtKa2z%2FlJpFNalMcXXQ5slYV5Hrd9HI%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/hosttools_capability/hosttools-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/hosttools_capability/hosttools-capability.log?sv=2019-07-07&sr=b&sig=WqJU7HA32um9X2ct1qkhyqJb8w%2BlsK%2FCNhFlBI6dhWY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/lifecycler/execution-wrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/lifecycler/execution-wrapper.log?sv=2019-07-07&sr=b&sig=RVlszVVXc5j90FjPxQ%2BfmZKD%2FZMLacrjgiFl8cd3IzI%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/lifecycler/lifecycler.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/lifecycler/lifecycler.log?sv=2019-07-07&sr=b&sig=ayrZMnw00WCLZYXhFQIIpSMRFT5YP8QvnzHOch2P3Ww%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/lifecycler/vm-bootstrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/lifecycler/vm-bootstrapper.log?sv=2019-07-07&sr=b&sig=6prcW2lY5csV1gGWuigyIZXR%2Bvx6QzLUIeO%2BOq%2BU5o4%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/metrics_capability/metrics-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/metrics_capability/metrics-capability.log?sv=2019-07-07&sr=b&sig=euA%2FgT6%2BONv3mLLipmC25zx263vuYwP47Z%2Fqw6lYRJA%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r', 'system_logs/snapshot_capability/snapshot-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/system_logs/snapshot_capability/snapshot-capability.log?sv=2019-07-07&sr=b&sig=w1EKGSsPFOGX0FxG1EmFPn0yO47ywnWJpDFVgmIY8dk%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A54%3A48Z&ske=2024-09-06T01%3A04%3A48Z&sks=b&skv=2019-07-07&st=2024-09-05T00%3A59%3A56Z&se=2024-09-05T09%3A09%3A56Z&sp=r'}, 'submittedBy': 'charu latha'}\n\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\n\n\nStepRunId: f44ec823-2dd8-4c8c-8053-23feee69336a\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/f44ec823-2dd8-4c8c-8053-23feee69336a?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nStepRun( Training Data ) Status: NotStarted\nStepRun( Training Data ) Status: Running\n\nStepRun(Training Data) Execution Summary\n=========================================\nStepRun( Training Data ) Status: Finished\n{'runId': 'f44ec823-2dd8-4c8c-8053-23feee69336a', 'target': 'AzureInstance', 'status': 'Completed', 'startTimeUtc': '2024-09-05T01:10:04.105706Z', 'endTimeUtc': '2024-09-05T01:10:19.068931Z', 'services': {}, 'properties': {'ContentSnapshotId': 'ea9575cc-de17-47c6-9b48-09e05027ddee', 'StepType': 'PythonScriptStep', 'azureml.moduleid': '0a585a16-d24b-49fa-9f24-fb2562b4aee8', 'azureml.moduleFamilyId': '6127df48-1077-4fee-b891-cb7fcfc8ca41', 'azureml.moduleName': 'Training Data', 'azureml.runsource': 'azureml.StepRun', 'azureml.nodeid': '6732b843', 'azureml.pipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipeline': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.rootpipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipelineComponent': 'masterescloud', '_azureml.ComputeTargetType': 'amlcdsi', '_azureml.ClusterName': 'AzureInstance', 'ProcessInfoFile': 'azureml-logs/process_info.json', 'ProcessStatusFile': 'azureml-logs/process_status.json'}, 'inputDatasets': [], 'outputDatasets': [], 'runDefinition': {'script': 'train.py', 'command': '', 'useAbsolutePath': False, 'arguments': ['--data_path', '$AZUREML_DATAREFERENCE_normalized_data', '--model_output_path', '$AZUREML_DATAREFERENCE_trained_model', '--test_data_path', '$AZUREML_DATAREFERENCE_test_data'], 'sourceDirectoryDataStore': None, 'framework': 'Python', 'communicator': 'None', 'target': 'AzureInstance', 'dataReferences': {'normalized_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f74d254d-3d8e-4b77-93b7-8c3e1f3602f9/normalized_data', 'pathOnCompute': None, 'overwrite': False}, 'trained_model': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f44ec823-2dd8-4c8c-8053-23feee69336a/trained_model', 'pathOnCompute': None, 'overwrite': False}, 'test_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f44ec823-2dd8-4c8c-8053-23feee69336a/test_data', 'pathOnCompute': None, 'overwrite': False}}, 'data': {}, 'outputData': {}, 'datacaches': [], 'jobName': None, 'maxRunDurationSeconds': None, 'nodeCount': 1, 'instanceTypes': [], 'priority': None, 'credentialPassthrough': False, 'identity': None, 'environment': {'name': 'heart_disease_env', 'version': 'Autosave_2024-09-04T12:47:00Z_1085e385', 'assetId': 'azureml://locations/eastus2/workspaces/48f871bf-0779-4901-963a-ebce55190d65/environments/heart_disease_env/versions/Autosave_2024-09-04T12:47:00Z_1085e385', 'autoRebuild': True, 'python': {'interpreterPath': 'python', 'userManagedDependencies': False, 'condaDependencies': {'name': 'heart_disease_env', 'dependencies': ['python=3.8.5', 'scikit-learn', 'pandas', 'joblib', 'pip', 'anaconda', {'pip': ['azureml-core', 'azureml-defaults', 'azureml-sdk']}]}, 'baseCondaEnvironment': None}, 'environmentVariables': {'EXAMPLE_ENV_VAR': 'EXAMPLE_VALUE'}, 'docker': {'baseImage': 'mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240709.v1', 'platform': {'os': 'Linux', 'architecture': 'amd64'}, 'baseDockerfile': None, 'baseImageRegistry': {'address': None, 'username': None, 'password': None}, 'enabled': False, 'arguments': []}, 'spark': {'repositories': [], 'packages': [], 'precachePackages': True}, 'inferencingStackVersion': None}, 'history': {'outputCollection': True, 'directoriesToWatch': ['logs'], 'enableMLflowTracking': True, 'snapshotProject': True}, 'spark': {'configuration': {'spark.app.name': 'Azure ML Experiment', 'spark.yarn.maxAppAttempts': '1'}}, 'parallelTask': {'maxRetriesPerWorker': 0, 'workerCountPerNode': 1, 'terminalExitCodes': None, 'configuration': {}}, 'amlCompute': {'name': None, 'vmSize': None, 'retainCluster': False, 'clusterMaxNodeCount': 1}, 'aiSuperComputer': {'instanceType': 'D2', 'imageVersion': 'pytorch-1.7.0', 'location': None, 'aiSuperComputerStorageData': None, 'interactive': False, 'scalePolicy': None, 'virtualClusterArmId': None, 'tensorboardLogDirectory': None, 'sshPublicKey': None, 'sshPublicKeys': None, 'enableAzmlInt': True, 'priority': 'Medium', 'slaTier': 'Standard', 'userAlias': None}, 'kubernetesCompute': {'instanceType': None}, 'tensorflow': {'workerCount': 1, 'parameterServerCount': 1}, 'mpi': {'processCountPerNode': 1}, 'pyTorch': {'communicationBackend': 'nccl', 'processCount': None}, 'hdi': {'yarnDeployMode': 'Cluster'}, 'containerInstance': {'region': None, 'cpuCores': 2.0, 'memoryGb': 3.5}, 'exposedPorts': None, 'docker': {'useDocker': False, 'sharedVolumes': True, 'shmSize': '2g', 'arguments': []}, 'cmk8sCompute': {'configuration': {}}, 'commandReturnCodeConfig': {'returnCode': 'Zero', 'successfulReturnCodes': []}, 'environmentVariables': {}, 'applicationEndpoints': {}, 'parameters': []}, 'logFiles': {'logs/azureml/executionlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/logs/azureml/executionlogs.txt?sv=2019-07-07&sr=b&sig=p7N3RqONAhNZnk67fNRFZWG94hm8RQLJtTToHWI38Gw%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A03Z&se=2024-09-05T09%3A10%3A03Z&sp=r', 'logs/azureml/stderrlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/logs/azureml/stderrlogs.txt?sv=2019-07-07&sr=b&sig=2LJfX3cF3a05tuGdIiSkqdrmLuptr35T3uywrittfD4%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A03Z&se=2024-09-05T09%3A10%3A03Z&sp=r', 'logs/azureml/stdoutlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/logs/azureml/stdoutlogs.txt?sv=2019-07-07&sr=b&sig=iJ7Is0Rt1fdc4cWgt2tFYfDUkZf%2F4HRqd8uZ81n%2Fqss%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A55%3A38Z&ske=2024-09-06T01%3A05%3A38Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A03Z&se=2024-09-05T09%3A10%3A03Z&sp=r', 'user_logs/std_log.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/user_logs/std_log.txt?sv=2019-07-07&sr=b&sig=fNOX%2F2U7tcjnPXMW0Nr5gN6PziUdHMjkcno%2FVF10NXw%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/cs_capability/cs-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/cs_capability/cs-capability.log?sv=2019-07-07&sr=b&sig=Hx9sCqYhecmj62HuE2EZbQ4EnqRNC0i3W3nhrE49dbk%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/data_capability/data-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/data_capability/data-capability.log?sv=2019-07-07&sr=b&sig=qcYk6TRBRTWD9OyCUubmmIy6BTxpMglLPM%2BG15JEgC4%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/data_capability/rslex.log.2024-09-05-01': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/data_capability/rslex.log.2024-09-05-01?sv=2019-07-07&sr=b&sig=beXoTuDmlJPYYyTs7DTH8xzOuz2K4KlTJI0JNZQk99Y%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/hosttools_capability/hosttools-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/hosttools_capability/hosttools-capability.log?sv=2019-07-07&sr=b&sig=lWs%2BIe1P7%2B6TrLgXwnC143eGMRDQ5jGDTm538IemYvw%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/lifecycler/execution-wrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/lifecycler/execution-wrapper.log?sv=2019-07-07&sr=b&sig=Tb18yDz4LBQ3hf3yzrcZx15nN7BLXuFgxFZ2u0kslgk%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/lifecycler/lifecycler.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/lifecycler/lifecycler.log?sv=2019-07-07&sr=b&sig=ZqDN17UwPHz793UcEEswwVCdLPlXQwJcRFcoQS5W5Jg%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/lifecycler/vm-bootstrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/lifecycler/vm-bootstrapper.log?sv=2019-07-07&sr=b&sig=qmkHMq5tPzKS45XdVxONuDtiowj1BRwExytdvONtVLY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/metrics_capability/metrics-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/metrics_capability/metrics-capability.log?sv=2019-07-07&sr=b&sig=RRfxB%2FwNLMwttZbv8ZYYskpWKy10o5I7LvOs%2FCFD8NQ%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r', 'system_logs/snapshot_capability/snapshot-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.f44ec823-2dd8-4c8c-8053-23feee69336a/system_logs/snapshot_capability/snapshot-capability.log?sv=2019-07-07&sr=b&sig=8OFdyrDBi63vwD7R66WwD9aF%2FUuAVpBeTrAaUlwYLDY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A18Z&ske=2024-09-06T01%3A10%3A18Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A20Z&se=2024-09-05T09%3A10%3A20Z&sp=r'}, 'submittedBy': 'charu latha'}\n\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\n\n\nStepRunId: b9a5e6b1-6521-4033-a77f-1d02f920521e\nLink to Azure Machine Learning Portal: https://ml.azure.com/runs/b9a5e6b1-6521-4033-a77f-1d02f920521e?wsid=/subscriptions/73bd14a5-edfe-4e77-a22d-8de4e1ca1301/resourcegroups/lathacharugundla-rg/workspaces/AzureLearning&tid=4dd0e38f-dff7-492a-9237-02dbb50cea63\nStepRun( Evaluate Model ) Status: NotStarted\n\nStepRun(Evaluate Model) Execution Summary\n==========================================\nStepRun( Evaluate Model ) Status: Finished\n{'runId': 'b9a5e6b1-6521-4033-a77f-1d02f920521e', 'target': 'AzureInstance', 'status': 'Completed', 'startTimeUtc': '2024-09-05T01:10:27.213415Z', 'endTimeUtc': '2024-09-05T01:10:41.06891Z', 'services': {}, 'properties': {'ContentSnapshotId': 'ea9575cc-de17-47c6-9b48-09e05027ddee', 'StepType': 'PythonScriptStep', 'azureml.moduleid': '104c18cf-35bb-4a8b-bb89-0b6f08cfe245', 'azureml.moduleFamilyId': 'c1c8d9de-8c56-4b24-a680-ce61b7f2f5f0', 'azureml.moduleName': 'Evaluate Model', 'azureml.runsource': 'azureml.StepRun', 'azureml.nodeid': '601af22e', 'azureml.pipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipeline': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.rootpipelinerunid': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'azureml.pipelineComponent': 'masterescloud', '_azureml.ComputeTargetType': 'amlcdsi', '_azureml.ClusterName': 'AzureInstance', 'ProcessInfoFile': 'azureml-logs/process_info.json', 'ProcessStatusFile': 'azureml-logs/process_status.json'}, 'inputDatasets': [], 'outputDatasets': [], 'runDefinition': {'script': 'evaluate_model.py', 'command': '', 'useAbsolutePath': False, 'arguments': ['--test_data_path', '$AZUREML_DATAREFERENCE_test_data', '--model_path', '$AZUREML_DATAREFERENCE_trained_model', '--output_path', '$AZUREML_DATAREFERENCE_evaluation_report'], 'sourceDirectoryDataStore': None, 'framework': 'Python', 'communicator': 'None', 'target': 'AzureInstance', 'dataReferences': {'test_data': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f44ec823-2dd8-4c8c-8053-23feee69336a/test_data', 'pathOnCompute': None, 'overwrite': False}, 'trained_model': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/f44ec823-2dd8-4c8c-8053-23feee69336a/trained_model', 'pathOnCompute': None, 'overwrite': False}, 'evaluation_report': {'dataStoreName': 'workspaceblobstore', 'mode': 'Mount', 'pathOnDataStore': 'azureml/b9a5e6b1-6521-4033-a77f-1d02f920521e/evaluation_report', 'pathOnCompute': None, 'overwrite': False}}, 'data': {}, 'outputData': {}, 'datacaches': [], 'jobName': None, 'maxRunDurationSeconds': None, 'nodeCount': 1, 'instanceTypes': [], 'priority': None, 'credentialPassthrough': False, 'identity': None, 'environment': {'name': 'heart_disease_env', 'version': 'Autosave_2024-09-04T12:47:00Z_1085e385', 'assetId': 'azureml://locations/eastus2/workspaces/48f871bf-0779-4901-963a-ebce55190d65/environments/heart_disease_env/versions/Autosave_2024-09-04T12:47:00Z_1085e385', 'autoRebuild': True, 'python': {'interpreterPath': 'python', 'userManagedDependencies': False, 'condaDependencies': {'name': 'heart_disease_env', 'dependencies': ['python=3.8.5', 'scikit-learn', 'pandas', 'joblib', 'pip', 'anaconda', {'pip': ['azureml-core', 'azureml-defaults', 'azureml-sdk']}]}, 'baseCondaEnvironment': None}, 'environmentVariables': {'EXAMPLE_ENV_VAR': 'EXAMPLE_VALUE'}, 'docker': {'baseImage': 'mcr.microsoft.com/azureml/openmpi4.1.0-ubuntu20.04:20240709.v1', 'platform': {'os': 'Linux', 'architecture': 'amd64'}, 'baseDockerfile': None, 'baseImageRegistry': {'address': None, 'username': None, 'password': None}, 'enabled': False, 'arguments': []}, 'spark': {'repositories': [], 'packages': [], 'precachePackages': True}, 'inferencingStackVersion': None}, 'history': {'outputCollection': True, 'directoriesToWatch': ['logs'], 'enableMLflowTracking': True, 'snapshotProject': True}, 'spark': {'configuration': {'spark.app.name': 'Azure ML Experiment', 'spark.yarn.maxAppAttempts': '1'}}, 'parallelTask': {'maxRetriesPerWorker': 0, 'workerCountPerNode': 1, 'terminalExitCodes': None, 'configuration': {}}, 'amlCompute': {'name': None, 'vmSize': None, 'retainCluster': False, 'clusterMaxNodeCount': 1}, 'aiSuperComputer': {'instanceType': 'D2', 'imageVersion': 'pytorch-1.7.0', 'location': None, 'aiSuperComputerStorageData': None, 'interactive': False, 'scalePolicy': None, 'virtualClusterArmId': None, 'tensorboardLogDirectory': None, 'sshPublicKey': None, 'sshPublicKeys': None, 'enableAzmlInt': True, 'priority': 'Medium', 'slaTier': 'Standard', 'userAlias': None}, 'kubernetesCompute': {'instanceType': None}, 'tensorflow': {'workerCount': 1, 'parameterServerCount': 1}, 'mpi': {'processCountPerNode': 1}, 'pyTorch': {'communicationBackend': 'nccl', 'processCount': None}, 'hdi': {'yarnDeployMode': 'Cluster'}, 'containerInstance': {'region': None, 'cpuCores': 2.0, 'memoryGb': 3.5}, 'exposedPorts': None, 'docker': {'useDocker': False, 'sharedVolumes': True, 'shmSize': '2g', 'arguments': []}, 'cmk8sCompute': {'configuration': {}}, 'commandReturnCodeConfig': {'returnCode': 'Zero', 'successfulReturnCodes': []}, 'environmentVariables': {}, 'applicationEndpoints': {}, 'parameters': []}, 'logFiles': {'logs/azureml/executionlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/logs/azureml/executionlogs.txt?sv=2019-07-07&sr=b&sig=ijR1cYKIC5yN3wnjH165Ri7KNe3L8lTNDnWaxIRpTik%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A59%3A31Z&ske=2024-09-06T01%3A09%3A31Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A26Z&se=2024-09-05T09%3A10%3A26Z&sp=r', 'logs/azureml/stderrlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/logs/azureml/stderrlogs.txt?sv=2019-07-07&sr=b&sig=LcRf4OvfnuDv0%2FRj0D%2FAF2IrfJz6FExnE9WRbnsGZfs%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A59%3A31Z&ske=2024-09-06T01%3A09%3A31Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A26Z&se=2024-09-05T09%3A10%3A26Z&sp=r', 'logs/azureml/stdoutlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/logs/azureml/stdoutlogs.txt?sv=2019-07-07&sr=b&sig=bN7NTjyL2j2Hel1I3npeLItqFTjvqETNAdtJ1dLTW%2Bk%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T00%3A59%3A31Z&ske=2024-09-06T01%3A09%3A31Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A26Z&se=2024-09-05T09%3A10%3A26Z&sp=r', 'user_logs/std_log.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/user_logs/std_log.txt?sv=2019-07-07&sr=b&sig=AiYAF0KiCehpC1hUJC7%2FnLqzpdPiRDhvfMfeYZg0msI%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A10Z&ske=2024-09-06T01%3A10%3A10Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/cs_capability/cs-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/cs_capability/cs-capability.log?sv=2019-07-07&sr=b&sig=DSq8WAsCfnI6uFwDS0d2lmZctisnEXWzYl444YvgmHk%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/data_capability/data-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/data_capability/data-capability.log?sv=2019-07-07&sr=b&sig=FYI3fCnHuuMi%2BjKEszcuWIoI84E0VU3FKOwU6cFZ1rw%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/data_capability/rslex.log.2024-09-05-01': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/data_capability/rslex.log.2024-09-05-01?sv=2019-07-07&sr=b&sig=i0SKnrLqGIydNkpJQ%2BMUcfE6cuXHx2DOcinZsoHQCbY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/hosttools_capability/hosttools-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/hosttools_capability/hosttools-capability.log?sv=2019-07-07&sr=b&sig=mIzvC1%2BEVonmW7MaJ%2FsR%2B7PNBoQxYw17Hc636sxNQwU%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/lifecycler/execution-wrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/lifecycler/execution-wrapper.log?sv=2019-07-07&sr=b&sig=JReUqwydOTNUZ%2B9eaauB7MQfaMwHW6BkkbG6wAW2yxs%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/lifecycler/lifecycler.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/lifecycler/lifecycler.log?sv=2019-07-07&sr=b&sig=MjB%2BEn07RaE2WIe5OT2YlcmDvpbDzbcg1a%2BV6OyLdsU%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/lifecycler/vm-bootstrapper.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/lifecycler/vm-bootstrapper.log?sv=2019-07-07&sr=b&sig=1vnup2ieI4SAVBQCxSFeF4bxRCKS%2BR5knrP9o7MaQPU%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/metrics_capability/metrics-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/metrics_capability/metrics-capability.log?sv=2019-07-07&sr=b&sig=KzDhwbmAuXjIRJHlSEtim9Lzv3ZCVO%2F%2FvIljmS7UrGY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r', 'system_logs/snapshot_capability/snapshot-capability.log': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.b9a5e6b1-6521-4033-a77f-1d02f920521e/system_logs/snapshot_capability/snapshot-capability.log?sv=2019-07-07&sr=b&sig=X57uT071FEJuk0mGAWC4dCj4n8xS%2BCVzYQzbWIHfWiw%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A40Z&ske=2024-09-06T01%3A10%3A40Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A42Z&se=2024-09-05T09%3A10%3A42Z&sp=r'}, 'submittedBy': 'charu latha'}\n\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "\n\nPipelineRun Execution Summary\n==============================\nPipelineRun Status: Finished\n{'runId': 'e4698e01-dc62-405b-bfee-4f759c7af7c5', 'status': 'Completed', 'startTimeUtc': '2024-09-05T01:08:45.242507Z', 'endTimeUtc': '2024-09-05T01:10:42.267644Z', 'services': {}, 'properties': {'azureml.runsource': 'azureml.PipelineRun', 'runSource': 'SDK', 'runType': 'SDK', 'azureml.parameters': '{}', 'azureml.continue_on_step_failure': 'False', 'azureml.continue_on_failed_optional_input': 'True', 'azureml.pipelineComponent': 'pipelinerun', 'azureml.pipelines.stages': '{\"Initialization\":null,\"Execution\":{\"StartTime\":\"2024-09-05T01:08:45.4669736+00:00\",\"EndTime\":\"2024-09-05T01:10:41.9539533+00:00\",\"Status\":\"Finished\"}}'}, 'inputDatasets': [], 'outputDatasets': [], 'logFiles': {'logs/azureml/executionlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.e4698e01-dc62-405b-bfee-4f759c7af7c5/logs/azureml/executionlogs.txt?sv=2019-07-07&sr=b&sig=aAY7cqOpBgGe1vmOW3AUIWlj%2FUIt8RPa7B2igeMxrR4%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A33Z&ske=2024-09-06T01%3A10%3A33Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A43Z&se=2024-09-05T09%3A10%3A43Z&sp=r', 'logs/azureml/stderrlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.e4698e01-dc62-405b-bfee-4f759c7af7c5/logs/azureml/stderrlogs.txt?sv=2019-07-07&sr=b&sig=XNNhd8ll33Ufq7WRIKn5P08a0uo2glBYJtPXDumeJ4A%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A33Z&ske=2024-09-06T01%3A10%3A33Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A43Z&se=2024-09-05T09%3A10%3A43Z&sp=r', 'logs/azureml/stdoutlogs.txt': 'https://azurelearning6729397454.blob.core.windows.net/azureml/ExperimentRun/dcid.e4698e01-dc62-405b-bfee-4f759c7af7c5/logs/azureml/stdoutlogs.txt?sv=2019-07-07&sr=b&sig=f7b0iS%2BwDvnmX7hG52YmFyhLpN2h7kf%2FhPVUN%2FVl2RY%3D&skoid=de8443df-0626-44ee-bb58-9f368c97af4c&sktid=4dd0e38f-dff7-492a-9237-02dbb50cea63&skt=2024-09-05T01%3A00%3A33Z&ske=2024-09-06T01%3A10%3A33Z&sks=b&skv=2019-07-07&st=2024-09-05T01%3A00%3A43Z&se=2024-09-05T09%3A10%3A43Z&sp=r'}, 'submittedBy': 'charu latha'}\n\n"
+        },
+        {
+          "output_type": "execute_result",
+          "execution_count": 25,
+          "data": {
+            "text/plain": "'Finished'"
+          },
+          "metadata": {}
+        }
+      ],
+      "execution_count": 25,
+      "metadata": {},
+      "id": "41fff923"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from azureml.core import Model\n",
+        "from azureml.core.webservice import AciWebservice, Webservice\n",
+        "from azureml.core.model import InferenceConfig\n",
+        "# Get the step run by name\n",
+        "step_run = pipeline_run.find_step_run(\"Training Data\")[0]\n",
+        "\n",
+        "# Retrieve the model path (output file)\n",
+        "model_path = step_run.get_output_data(\"trained_model\").download(local_path=\"outputs\")"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": "Path already exists. Skipping download for outputs/azureml/f44ec823-2dd8-4c8c-8053-23feee69336a/trained_model\n"
+        }
+      ],
+      "execution_count": 36,
+      "metadata": {},
+      "id": "a8d55bc3"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "model = Model.register(workspace=ws, model_name='heart_disease_model', model_path='outputs/azureml/f44ec823-2dd8-4c8c-8053-23feee69336a/trained_model')"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Registering model heart_disease_model\n"
+        }
+      ],
+      "execution_count": 35,
+      "metadata": {},
+      "id": "0e75f289"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "# Define inference configuration\n",
+        "inference_config = InferenceConfig(\n",
+        "    environment=env,\n",
+        "    source_directory='.',\n",
+        "    entry_script='score.py'  # Create a score.py script for inference\n",
+        ")"
+      ],
+      "outputs": [],
+      "execution_count": 39,
+      "metadata": {},
+      "id": "cbbf03d2"
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "\n",
+        "aci_config = AciWebservice.deploy_configuration(cpu_cores=1, memory_gb=1)\n",
+        "service = Model.deploy(name='heart-disease-deploy',\n",
+        "                      models=[model], \n",
+        "                      inference_config=inference_config,\n",
+        "                      deployment_config=aci_config,\n",
+        "                      workspace=ws)\n",
+        "service.wait_for_deployment(show_output=True)"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stderr",
+          "text": "/tmp/ipykernel_3959/2471029644.py:2: FutureWarning: azureml.core.model:\nTo leverage new model deployment capabilities, AzureML recommends using CLI/SDK v2 to deploy models as online endpoint, \nplease refer to respective documentations \nhttps://docs.microsoft.com/azure/machine-learning/how-to-deploy-managed-online-endpoints /\nhttps://docs.microsoft.com/azure/machine-learning/how-to-attach-kubernetes-anywhere \nFor more information on migration, see https://aka.ms/acimoemigration \nTo disable CLI/SDK v1 deprecation warning set AZUREML_LOG_DEPRECATION_WARNING_ENABLED to 'False'\n  service = Model.deploy(name='heart-disease-deploy',\n"
+        },
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Tips: You can try get_logs(): https://aka.ms/debugimage#dockerlog or local deployment: https://aka.ms/debugimage#debug-locally to debug if deployment takes longer than 10 minutes.\nRunning\n2024-09-05 02:01:13+00:00 Creating Container Registry if not exists.\n2024-09-05 02:01:14+00:00 Use the existing image.\n2024-09-05 02:01:15+00:00 Generating deployment configuration.\n2024-09-05 02:01:17+00:00 Submitting deployment to compute.\n2024-09-05 02:01:22+00:00 Checking the status of deployment heart-disease-deploy..\n2024-09-05 02:03:22+00:00 Checking the status of inference endpoint heart-disease-deploy.\nSucceeded\nACI service creation operation finished, operation \"Succeeded\"\n"
+        }
+      ],
+      "execution_count": 42,
+      "metadata": {},
+      "id": "adc46c47"
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "name": "python3",
+      "language": "python",
+      "display_name": "Python 3 (ipykernel)"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.9.18",
+      "mimetype": "text/x-python",
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "pygments_lexer": "ipython3",
+      "nbconvert_exporter": "python",
+      "file_extension": ".py"
+    },
+    "varInspector": {
+      "cols": {
+        "lenName": 16,
+        "lenType": 16,
+        "lenVar": 40
+      },
+      "kernels_config": {
+        "python": {
+          "delete_cmd_postfix": "",
+          "delete_cmd_prefix": "del ",
+          "library": "var_list.py",
+          "varRefreshCmd": "print(var_dic_list())"
+        },
+        "r": {
+          "delete_cmd_postfix": ") ",
+          "delete_cmd_prefix": "rm(",
+          "library": "var_list.r",
+          "varRefreshCmd": "cat(var_dic_list()) "
+        }
+      },
+      "types_to_exclude": [
+        "module",
+        "function",
+        "builtin_function_or_method",
+        "instance",
+        "_Feature"
+      ],
+      "window_display": false
+    },
+    "kernel_info": {
+      "name": "python3"
+    },
+    "microsoft": {
+      "ms_spell_check": {
+        "ms_spell_check_language": "en"
+      }
+    },
+    "nteract": {
+      "version": "nteract-front-end@1.0.0"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
